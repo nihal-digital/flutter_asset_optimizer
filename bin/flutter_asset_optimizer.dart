@@ -49,6 +49,7 @@ void main(List<String> arguments) {
   final unused = declared.where((a) => !used.contains(a)).toList();
   final sizes = _calculateSizes(declared);
   final unusedSizes = _calculateSizes(unused);
+
   final total = sizes.values.fold(0, (a, b) => a + b);
   final wasted = unusedSizes.values.fold(0, (a, b) => a + b);
 
@@ -62,9 +63,14 @@ void main(List<String> arguments) {
       print('Use --confirm to actually delete and compress');
       return;
     }
+
     final deleted = _deleteUnused(unused);
-    final saved = _compress(declared, config['compression_quality'] as int? ?? 80);
-    print('\nDone! Deleted: ${_format(wasted)} | Compressed: ${_format(saved)}');
+
+    // ⬇️ FIXED: compress only used assets (not deleted)
+    final usedAssets = declared.where((a) => !unused.contains(a)).toList();
+    final saved = _compress(usedAssets, config['compression_quality'] as int? ?? 80);
+
+    print('\nDone! Deleted: ${_format(deleted)} | Compressed: ${_format(saved)}');
   }
 }
 
@@ -99,14 +105,15 @@ Set<String> _findAssetReferences(Directory libDir, List<String> ignore) {
 
   final ignoreRes = ignore.map((p) => RegExp(p, caseSensitive: false)).toList();
 
-  // CLEAN, WORKING regexes – copy exactly as-is
   final patterns = <RegExp>[
-  RegExp(r'''AssetImage\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
-  RegExp(r'''Image\.asset\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
-  RegExp(r'''rootBundle\.load(String)?\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
-  RegExp(r'''['"](assets?/[^'"]+\.(png|jpe?g|jpeg|webp|gif|svg|ttf|otf|json|pdf|yaml|yml))['"]''',
-      caseSensitive: false),
-];
+    RegExp(r'''AssetImage\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
+    RegExp(r'''Image\.asset\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
+    RegExp(r'''rootBundle\.load(String)?\s*\(\s*['"]([^'"]+)['"]\s*\)'''),
+    RegExp(
+      r'''['"](assets?/[^'"]+\.(png|jpe?g|jpeg|webp|gif|svg|ttf|otf|json|pdf|yaml|yml))['"]''',
+      caseSensitive: false,
+    ),
+  ];
 
   for (final entity in libDir.listSync(recursive: true)) {
     if (entity is! File || !entity.path.endsWith('.dart')) continue;
@@ -152,7 +159,7 @@ void _report(List<String> unused, Map<String, int> sizes) {
   final f = File('asset_optimizer_report.txt');
   f.writeAsStringSync(
     'Unused assets (${DateTime.now()}):\n' +
-    '${unused.map((p) => '• $p (${_format(sizes[p] ?? 0)})').join('\n')}\n',
+        '${unused.map((p) => '• $p (${_format(sizes[p] ?? 0)})').join('\n')}\n',
   );
   print('Report saved → ${f.path}');
 }
@@ -172,28 +179,34 @@ int _deleteUnused(List<String> unused) {
 
 int _compress(List<String> assets, int quality) {
   int saved = 0;
+
   for (final p in assets) {
     if (!RegExp(r'\.(png|jpe?g|webp)$', caseSensitive: false).hasMatch(p)) continue;
+
     final f = File(p);
+    if (!f.existsSync()) continue; // ⬅️ SAFE GUARD
+
     final bytes = f.readAsBytesSync();
-   final decoded = img.decodeImage(bytes);
-if (decoded == null) continue;
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) continue;
 
-List<int> compressed;
-if (p.toLowerCase().endsWith('.png')) {
-  final level = max(0, min(9, (100 - quality) ~/ 11));
-  compressed = img.encodePng(decoded, level: level);
-} else {
-  compressed = img.encodeJpg(decoded, quality: quality);
-}
+    List<int> compressed;
 
+    if (p.toLowerCase().endsWith('.png')) {
+      final level = max(0, min(9, (100 - quality) ~/ 11));
+      compressed = img.encodePng(decoded, level: level);
+    } else {
+      compressed = img.encodeJpg(decoded, quality: quality);
+    }
 
     if (compressed.length < bytes.length) {
       f.writeAsBytesSync(compressed);
-      saved += bytes.length - compressed.length;
-      print('Compressed: $p → saved ${_format(bytes.length - compressed.length)}');
+      final diff = bytes.length - compressed.length;
+      saved += diff;
+      print('Compressed: $p → saved ${_format(diff)}');
     }
   }
+
   return saved;
 }
 
